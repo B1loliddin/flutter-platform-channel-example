@@ -7,12 +7,35 @@
 
 #include "flutter/generated_plugin_registrant.h"
 
+#include <math.h>
+#include <upower.h>
+
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+
+  FlMethodChannel* battery_channel;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
+
+static FlMethodResponse* get_battery_level() {
+    // Find the first available battery and report that.
+    g_autoptr(UpClient) up_client = up_client_new();
+    g_autoptr(GPtrArray) devices = up_client_get_devices2(up_client);
+    if (devices->len == 0) {
+        return FL_METHOD_RESPONSE(fl_method_error_response_new(
+                "UNAVAILABLE", "Device does not have a battery.", nullptr));
+    }
+
+    UpDevice* device = UP_DEVICE(g_ptr_array_index(devices, 0));
+    double percentage = 0;
+    g_object_get(device, "percentage", &percentage, nullptr);
+
+    g_autoptr(FlValue) result =
+                               fl_value_new_int(static_cast<int64_t>(round(percentage)));
+    return FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+}
 
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
@@ -59,6 +82,13 @@ static void my_application_activate(GApplication* application) {
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
 
+  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
+  self->battery_channel = fl_method_channel_new(
+          fl_engine_get_binary_messenger(fl_view_get_engine(view)),
+          "samples.flutter.dev/battery", FL_METHOD_CODEC(codec));
+  fl_method_channel_set_method_call_handler(
+          self->battery_channel, battery_method_call_handler, self, nullptr);
+
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }
 
@@ -103,6 +133,9 @@ static void my_application_shutdown(GApplication* application) {
 static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
+
+  g_clear_object(&self->battery_channel);
+
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }
 
